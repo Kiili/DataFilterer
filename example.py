@@ -18,6 +18,9 @@ class CIFAR10Dataset(torchvision.datasets.CIFAR10):
                              transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                                   std=[0.229, 0.224, 0.225])]))
 
+    def __len__(self):
+        return 3000
+
     def __getitem__(self, idx):
         img, label = super().__getitem__(index=idx)
 
@@ -53,10 +56,16 @@ if __name__ == '__main__':
 
     filterer_instance = DataFilterer(model=Resnet32Example(),
                                      layer="avgpool",  # see print(model) for layer names
-                                     device="cuda")  # only cuda supported right now
+                                     device="cpu")
 
     idxs = filterer_instance.get_idxs(outliar_percentage=0.1,
-                                      semantic_percentage=0.1,
-                                      show_imgs=(640, 640),
-                                      plot_points=False)
-    print(idxs)  # the indexes of images that are in the filtered dataset
+                                      semantic_percentage=0)
+    # print(idxs)  # the indexes of images that are in the filtered dataset
+
+
+    # filterer_instance.get_imgs((640, 640))
+
+    import matplotlib as mpl
+    mpl.use("GTK3Agg")
+    plt = filterer_instance.get_plot()
+    plt.show()

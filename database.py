@@ -74,47 +74,17 @@ class Cluster_filterer:
         print(round(time.time() - s, 2), flush=True)
         return U
 
-    def plot_points(self, pca_arr, idxs, not_passed):
-        print("plotting", flush=True)
-        mpl.use("GTK3Agg")
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-        colors = []
-
-        for i in range(len(pca_arr)):
-            if i in idxs:
-                colors.append((0, 1, 0, 0.3))
-                continue
-
-            if i in not_passed and not_passed[i] == [-1]:
-                colors.append((1, 0, 0, 1))
-                continue
-
-            colors.append((0, 0, 1, 1))
-
-        ax.scatter3D([a[0] for a in pca_arr], [a[1] for a in pca_arr], [a[2] for a in pca_arr],
-                     c=colors)
-        for k, v in not_passed.items():
-            if v != [-1]:
-                for item in v:
-                    ax.plot([pca_arr[k][0], pca_arr[item][0]],
-                            [pca_arr[k][1], pca_arr[item][1]],
-                            zs=[pca_arr[k][2], pca_arr[item][2]])
-
-        plt.savefig("plt.jpg")
-        plt.show()
-
     def hdbscan_cuda(self, cluster_size, not_passed):
         import cuml
-        import cudf
         print("hdbscan_cuda ", flush=True, end="")
-        if type(self.db) is not cudf.DataFrame:
-            self.db = cudf.DataFrame(self.db)
+        # maybe the only doc about this
+        # https://gitee.com/mirrors/cuML/blob/branch-23.06/python/cuml/cluster/hdbscan/hdbscan.pyx
         hdb = cuml.cluster.HDBSCAN(min_cluster_size=cluster_size,
+                                   max_cluster_size=cluster_size,
                                    allow_single_cluster=True,
-                                   output_type="numpy",
                                    min_samples=2,
                                    cluster_selection_method="eom",
+                                   output_type="numpy",
                                    )
 
         s = time.time()
@@ -131,16 +101,14 @@ class Cluster_filterer:
 
     def hdbscan_cpu(self, cluster_size, not_passed):
         print("hdbscan_cpu ", flush=True, end="")
-        if torch.is_tensor(self.db):
-            self.db = self.db.cpu().numpy()
-        if type(self.db) is not np.ndarray:
-            self.db = np.array(self.db)
         hdb = hdbscan.HDBSCAN(min_cluster_size=cluster_size,
+                              max_cluster_size=cluster_size,
                               allow_single_cluster=True,
                               min_samples=2,
+                              cluster_selection_method="eom",
                               )
         s = time.time()
-        hdb.fit(self.db)
+        hdb.fit(self.db.astype(np.double))
         print(round(time.time() - s, 2), flush=True)
         for i, b in enumerate(hdb.labels_):
             if b != 0:
@@ -151,10 +119,7 @@ class Cluster_filterer:
 
     def agg_cluster_cuda(self, num_clusters):
         import cuml
-        import cudf
         print("clustering_cuda ", flush=True, end="")
-        if type(self.db) is not cudf.DataFrame:
-            self.db = cudf.DataFrame(self.db)
         clusterer = cuml.AgglomerativeClustering(n_clusters=num_clusters,
                                                  affinity="cosine",
                                                  linkage="single",
@@ -170,10 +135,6 @@ class Cluster_filterer:
 
     def agg_cluster_cpu(self, num_clusters):
         print("clustering_cpu ", flush=True, end="")
-        if torch.is_tensor(self.db):
-            self.db = self.db.cpu().numpy()
-        if type(self.db) is not np.ndarray:
-            self.db = self.db.to_numpy()
         clusterer = AgglomerativeClustering(n_clusters=num_clusters,
                                             metric="cosine",
                                             linkage="single",
@@ -184,9 +145,6 @@ class Cluster_filterer:
         return clusterer.labels_
 
     def get_cluster_center_idxs(self, cluster_labels, num_clusters, db_idxs, not_passed):
-        if type(self.db) is not np.ndarray:
-            self.db = self.db.to_numpy()
-
         nc = NearestCentroid(metric="euclidean")
         nc.fit(self.db, cluster_labels)
         cluster_centers = nc.centroids_
@@ -209,25 +167,17 @@ class Cluster_filterer:
 
         return set(idxs)
 
-    def get_idxs(self, plot_points, outliar_percentage, semantic_percentage):
-        # self.db = self.db[:self.item_idx + 1]
-        downscale_dim = min(*self.db.shape, 100)
-        print(self.db.shape)
+    def get_idxs(self, outliar_percentage, semantic_percentage):
+        if torch.device(self.device) == torch.device("cpu"):
+            return self.get_idxs_cpu(outliar_percentage, semantic_percentage)
 
-        if plot_points:
-            pca_arr = self.pca(3)
-            plot_points = pca_arr.cpu().numpy()
-            # self.db = pca_arr
-            # plot_points = self.pca_incremental_cpu(features=self.db, n_components=3, batch_size=5)
-            # plot_points = self.pca_incremental_cuda(features=self.db,
-            #                                        n_components=3,
-            #                                        batch_size=10).to_numpy()
+        return self.get_idxs_cuda(outliar_percentage, semantic_percentage)
+
+    def get_idxs_cpu(self, outliar_percentage, semantic_percentage):
+        downscale_dim = min(*self.db.shape, 100)
+        plot_points = self.pca(3).cpu().numpy()
 
         if downscale_dim < self.db.shape[1]:
-            # downscale the feature maps
-            # self.db = self.pca_incremental_cuda(features=self.db,
-            #                                     n_components=downscale_dim,
-            #                                     batch_size=10)
             self.db = self.pca(n_components=downscale_dim)
 
         not_passed = dict()
@@ -236,19 +186,43 @@ class Cluster_filterer:
 
         # outliar detection
         cluster_size = int(self.db.shape[0] * (1 - outliar_percentage))
+        self.db = self.db.numpy()
+        is_in = self.hdbscan_cpu(cluster_size, not_passed)
+        db_idxs = db_idxs[is_in]
+
+        # clustering
+        num_clusters = out_dataset_size
+        cluster_labels = self.agg_cluster_cpu(num_clusters)
+        idxs = self.get_cluster_center_idxs(cluster_labels, num_clusters, db_idxs, not_passed)
+
+        return idxs, not_passed, plot_points
+
+    def get_idxs_cuda(self, outliar_percentage, semantic_percentage):
+        # self.db = self.db[:self.item_idx + 1]
+        import cudf
+        downscale_dim = min(*self.db.shape, 100)
+        plot_points = self.pca(3).cpu().numpy()
+
+        if downscale_dim < self.db.shape[1]:
+            self.db = self.pca(n_components=downscale_dim)
+
+        not_passed = dict()
+        out_dataset_size = int((1 - outliar_percentage - semantic_percentage) * self.db.shape[0])
+        db_idxs = np.array(range(self.db.shape[0]), dtype=int)
+
+        # outliar detection
+        cluster_size = int(self.db.shape[0] * (1 - outliar_percentage))
+        self.db = cudf.DataFrame(self.db)
         is_in = self.hdbscan_cuda(cluster_size, not_passed)
         db_idxs = db_idxs[is_in]
 
         # clustering
         num_clusters = out_dataset_size
         cluster_labels = self.agg_cluster_cuda(num_clusters)
+        self.db = self.db.to_numpy()
         idxs = self.get_cluster_center_idxs(cluster_labels, num_clusters, db_idxs, not_passed)
 
-        # plotting
-        if plot_points is not False:
-            self.plot_points(plot_points, idxs, not_passed)
-
-        return idxs, not_passed
+        return idxs, not_passed, plot_points
 
     def __del__(self):
         self.db = torch.Tensor().to(self.device)

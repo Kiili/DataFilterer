@@ -14,14 +14,15 @@ class DataFilterer:
     def __init__(self, model: filterable_interface.FilterableInterface, layer, device=None):
         self.model = model
         self.layer = layer
-        self.device = device
         self.db = None
         self.data_args = []
-        if not self.device:
+        self.passed_idxs, self.failed_idxs, self.plot_points = None, None, None
+        if not device:
             self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        else:
+            self.device = torch.device(device)
 
         self.model.get_model().to(self.device)
-
         self.model.get_model().eval()
 
         self.activation = []
@@ -82,46 +83,76 @@ class DataFilterer:
             s = time.time()
         print("")
 
-    def get_idxs(self, outliar_percentage, semantic_percentage, plot_points=False, show_imgs=False):
+    def get_idxs(self,
+                 outliar_percentage: float,
+                 semantic_percentage: float):
         if not self.db:
             self.calc_db()
-        passed, failed = self.db.get_idxs(plot_points=plot_points,
-                                          outliar_percentage=outliar_percentage,
-                                          semantic_percentage=semantic_percentage)
+        self.passed_idxs, self.failed_idxs, self.plot_points = self.db.get_idxs(outliar_percentage=outliar_percentage,
+                                                                                semantic_percentage=semantic_percentage)
 
-        if show_imgs is not False:
-            res = show_imgs
-            cv2.destroyAllWindows()
-            for k, v in sorted(failed.items(), key=lambda x: -len(x[1])):
-                img = self.model.get_image(self.data_args[k])
-                img = cv2.resize(np.array(img), res)
-                # print(self.data_args[k], end=", ")
-                if v != [-1]:
-                    similars = []
-                    for i in v:
-                        similars.append(self.model.get_image(self.data_args[i]))
-                        # print(self.data_args[i], end=", ")
-                    square_size = math.ceil(math.sqrt(len(similars)))
-                    rows = []
-                    for i in range(square_size):
-                        row = []
-                        for j in range(square_size):
-                            if len(similars) > i * square_size + j:
-                                row.append(similars[i * square_size + j])
-                            else:
-                                row.append(np.zeros_like(similars[0]))
-                        rows.append(np.concatenate(row, axis=1))
-                    img2 = np.concatenate(rows, axis=0)
-                    img2 = cv2.resize(img2, res)
-                    img = np.concatenate((img, img2), axis=1)
+        return [self.data_args[idx] for idx in self.passed_idxs]
 
-                cv2.imshow("out", img)
-                cv2.resizeWindow("out", res[0] * 2, res[1])
-                cv2.moveWindow("out", 1920, 100)
-                # print("")
-                cv2.waitKey(0)
+    def get_imgs(self, resolution: tuple):
 
-        return [self.data_args[idx] for idx in passed]
+        cv2.destroyAllWindows()
+        for k, v in sorted(self.failed_idxs.items(), key=lambda x: -len(x[1])):
+            img = self.model.get_image(self.data_args[k])
+            img = cv2.resize(np.array(img), resolution)
+            # print(self.data_args[k], end=", ")
+            if v != [-1]:
+                similars = []
+                for i in v:
+                    similars.append(self.model.get_image(self.data_args[i]))
+                    # print(self.data_args[i], end=", ")
+                square_size = math.ceil(math.sqrt(len(similars)))
+                rows = []
+                for i in range(square_size):
+                    row = []
+                    for j in range(square_size):
+                        if len(similars) > i * square_size + j:
+                            row.append(similars[i * square_size + j])
+                        else:
+                            row.append(np.zeros_like(similars[0]))
+                    rows.append(np.concatenate(row, axis=1))
+                img2 = np.concatenate(rows, axis=0)
+                img2 = cv2.resize(img2, resolution)
+                img = np.concatenate((img, img2), axis=1)
+
+            cv2.imshow("out", img)
+            cv2.resizeWindow("out", resolution[0] * 2, resolution[1])
+            cv2.moveWindow("out", 1920, 100)
+            # print("")
+            cv2.waitKey(0)
+
+    def get_plot(self):
+        from matplotlib import pyplot as plt
+        print("plotting", flush=True)
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        colors = []
+
+        for i in range(len(self.plot_points)):
+            if i in self.passed_idxs:
+                colors.append((0, 1, 0, 0.3))
+                continue
+
+            if i in self.failed_idxs and self.failed_idxs[i] == [-1]:
+                colors.append((1, 0, 0, 1))
+                continue
+
+            colors.append((0, 0, 1, 1))
+
+        ax.scatter3D([a[0] for a in self.plot_points], [a[1] for a in self.plot_points], [a[2] for a in self.plot_points],
+                     c=colors)
+        for k, v in self.failed_idxs.items():
+            if v != [-1]:
+                for item in v:
+                    ax.plot([self.plot_points[k][0], self.plot_points[item][0]],
+                            [self.plot_points[k][1], self.plot_points[item][1]],
+                            zs=[self.plot_points[k][2], self.plot_points[item][2]])
+
+        return plt
 
     def __del__(self):
         self.hook.remove()
