@@ -1,38 +1,37 @@
 import time
+import warnings
 
 import numpy as np
-import sklearn
 import torch
-from sklearn.metrics.pairwise import cosine_distances
-from sklearn.cluster import KMeans, AgglomerativeClustering
-from sklearn.neighbors import NearestCentroid
-from sklearn.decomposition import PCA, IncrementalPCA
-import matplotlib as mpl
-import matplotlib.pyplot as plt
 import hdbscan
-import tensordict.memmap as mem
+from sklearn.metrics.pairwise import cosine_distances
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.neighbors import NearestCentroid
+from sklearn.decomposition import IncrementalPCA
 
 
 class Cluster_filterer:
 
-    def __init__(self, dim_size, device, max_items=None):
-        self.dim_size = dim_size
+    def __init__(self, device):
         self.device = torch.device(device)
 
         # cache feature maps to disk instead of (v)ram
-        # self.cache = "cache.pt"
-        # self.db = np.memmap(shape=(max_items, dim_size), filename=self.cache, mode="w+", dtype=float)
-        # self.db = mem.MemmapTensor(2500, dim_size, filename=self.cache, mode="r+", device=self.device)
+        # self.db = np.memmap(shape=(max_items, dim_size), filename="cache.pt", mode="w+", dtype=float)
         # self.item_idx = 0
+
+        # cache feature maps to (v)ram
         self.db = torch.Tensor().to(self.device)
 
     def insert(self, x: torch.tensor):
-        # todo store not in ram or vram, but disk
-        x = x.to(self.device)  # .cpu().numpy()
-        # for b in x:
-        #     self.db[self.item_idx] = b
-        #     self.item_idx += 1
+        # cache feature maps to (v)ram
+        x = x.to(self.device)
         self.db = torch.cat((self.db, x), dim=0)
+
+        # cache feature maps to disk
+        # x = x.cpu().numpy()
+        # for batch in x:
+        #     self.db[self.item_idx] = batch
+        #     self.item_idx += 1
 
     def pca_incremental_cuda(self, features, batch_size, n_components=3):
         print("pca incremental ", end="", flush=True)
@@ -65,7 +64,7 @@ class Cluster_filterer:
         out = pca.fit_transform(features)
         return out
 
-    def pca(self, n_components=3, niter=50):
+    def pca(self, n_components, niter=50):
         print("pca ", end="", flush=True)
         s = time.time()
         if not torch.is_tensor(self.db):
@@ -85,6 +84,7 @@ class Cluster_filterer:
                                    min_samples=2,
                                    cluster_selection_method="eom",
                                    output_type="numpy",
+                                   connectivity='knn',
                                    )
 
         s = time.time()
@@ -96,7 +96,6 @@ class Cluster_filterer:
                 not_passed[i] = [-1]
 
         self.db = self.db.take(is_in)
-
         return is_in
 
     def hdbscan_cpu(self, cluster_size, not_passed):
@@ -104,11 +103,10 @@ class Cluster_filterer:
         hdb = hdbscan.HDBSCAN(min_cluster_size=cluster_size,
                               max_cluster_size=cluster_size,
                               allow_single_cluster=True,
-                              min_samples=2,
                               cluster_selection_method="eom",
                               )
         s = time.time()
-        hdb.fit(self.db.astype(np.double))
+        hdb.fit(self.db)
         print(round(time.time() - s, 2), flush=True)
         for i, b in enumerate(hdb.labels_):
             if b != 0:
@@ -125,18 +123,20 @@ class Cluster_filterer:
                                                  linkage="single",
                                                  output_type="numpy",
                                                  connectivity="knn",
-                                                 n_neighbors=2,
                                                  )
-
         s = time.time()
         clusterer.fit(self.db)
         print(round(time.time() - s, 2), flush=True)
         return clusterer.labels_
 
     def agg_cluster_cpu(self, num_clusters):
+        """
+        This is O(n**2) memory, because connectivity="knn" is not supported
+        """
         print("clustering_cpu ", flush=True, end="")
         clusterer = AgglomerativeClustering(n_clusters=num_clusters,
                                             metric="cosine",
+                                            affinity="cosine",
                                             linkage="single",
                                             )
         s = time.time()
@@ -145,8 +145,23 @@ class Cluster_filterer:
         return clusterer.labels_
 
     def get_cluster_center_idxs(self, cluster_labels, num_clusters, db_idxs, not_passed):
-        nc = NearestCentroid(metric="euclidean")
-        nc.fit(self.db, cluster_labels)
+        """
+        Find the center-most feature map of each cluster
+        :param cluster_labels: cluster label for each feature map
+        :param num_clusters: total amount of clusters
+        :param db_idxs: the original dataset indexes for each feature map
+
+        :param not_passed: fill this dict(k, v) with
+        k: center-most feature map index in a cluster
+        v: [other feature map indexes that are in the same cluster as k]
+
+        :return: indexes of feature maps that are kept in the dataset
+        """
+        print("cluster_centroids ", flush=True, end="")
+        s = time.time()
+        nc = NearestCentroid(metric="cosine")
+        with warnings.catch_warnings(record=True):
+            nc.fit(self.db, cluster_labels)
         cluster_centers = nc.centroids_
 
         dists = np.full(shape=(num_clusters,), fill_value=np.inf, dtype=float)
@@ -164,14 +179,15 @@ class Cluster_filterer:
                 idxs[cluster_idx] = db_idxs[i]
             else:
                 not_passed[idxs[cluster_idx]] = not_passed.get(idxs[cluster_idx], []) + [db_idxs[i]]
-
+        print(round(time.time() - s, 2), flush=True)
         return set(idxs)
 
     def get_idxs(self, outliar_percentage, semantic_percentage):
-        if torch.device(self.device) == torch.device("cpu"):
-            return self.get_idxs_cpu(outliar_percentage, semantic_percentage)
+        f = self.get_idxs_cuda
+        if self.device == torch.device("cpu"):
+            f = self.get_idxs_cpu
 
-        return self.get_idxs_cuda(outliar_percentage, semantic_percentage)
+        return f(outliar_percentage, semantic_percentage)
 
     def get_idxs_cpu(self, outliar_percentage, semantic_percentage):
         downscale_dim = min(*self.db.shape, 100)
@@ -184,7 +200,7 @@ class Cluster_filterer:
         out_dataset_size = int((1 - outliar_percentage - semantic_percentage) * self.db.shape[0])
         db_idxs = np.array(range(self.db.shape[0]), dtype=int)
 
-        # outliar detection
+        # outlier detection
         cluster_size = int(self.db.shape[0] * (1 - outliar_percentage))
         self.db = self.db.numpy()
         is_in = self.hdbscan_cpu(cluster_size, not_passed)
@@ -198,7 +214,6 @@ class Cluster_filterer:
         return idxs, not_passed, plot_points
 
     def get_idxs_cuda(self, outliar_percentage, semantic_percentage):
-        # self.db = self.db[:self.item_idx + 1]
         import cudf
         downscale_dim = min(*self.db.shape, 100)
         plot_points = self.pca(3).cpu().numpy()
@@ -210,7 +225,7 @@ class Cluster_filterer:
         out_dataset_size = int((1 - outliar_percentage - semantic_percentage) * self.db.shape[0])
         db_idxs = np.array(range(self.db.shape[0]), dtype=int)
 
-        # outliar detection
+        # outlier detection
         cluster_size = int(self.db.shape[0] * (1 - outliar_percentage))
         self.db = cudf.DataFrame(self.db)
         is_in = self.hdbscan_cuda(cluster_size, not_passed)
