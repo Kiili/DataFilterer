@@ -1,11 +1,11 @@
 from typing import Iterable
 import numpy as np
-from torch import nn
+import torch
 
 
 class FilterableInterface:
 
-    def get_model(self) -> nn.Module:
+    def get_model(self) -> torch.nn.Module:
         """
         :return: pytorch model
         """
@@ -23,7 +23,13 @@ class FilterableInterface:
 
     def get_image(self, arg) -> np.ndarray:
         """
-        optional for show_imgs
-        :return: single image from the filterable dataset specified by its :arg:
+        optional for viewing images in the application
+
+        If :arg: is used as image file path, it can be implemented:
+        PIL:    np.array(PIL.Image.open(arg))
+        OpenCV: cv2.imread(arg)[:,:,::-1]  # BGR to RGB
+
+        :return: channels-last RGB image from the
+        filterable dataset specified by its :arg:
         """
         raise NotImplementedError

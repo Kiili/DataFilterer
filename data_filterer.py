@@ -1,4 +1,8 @@
+import math
 import time
+from typing import Union
+
+import matplotlib
 import torch
 
 from filterable_interface import FilterableInterface
@@ -10,6 +14,17 @@ class DataFilterer:
                  model: FilterableInterface,
                  layer: str,
                  device: str | torch.device | None = None):
+        """
+        :param model: Class instance that extends FilterableInterface
+        See FilterableInterface contents for details
+
+        :param layer: layer name of the model that is used to extract feature maps from
+        See print(model.get_model()) for model naming tree
+
+        :param device: device to use for filtering and dataset forwarding
+        cpu is experimental and usable in small datasets and models
+        By default, cuda is used if available
+        """
         self.model = model
         self.layer = layer
         self.data_args = []
@@ -58,7 +73,10 @@ class DataFilterer:
         """
         for batch in self.model.get_filterable_dataset():
             batch, args = batch
-            batch = batch.to(self.device)
+
+            if torch.is_tensor(batch):
+                batch = batch.to(self.device)
+
             layer_data = self.eval_at_layer(batch).cpu().numpy()
             return layer_data.shape[1:]
 
@@ -77,7 +95,10 @@ class DataFilterer:
 
             self.data_args += [arg for arg in args]
 
-            layer_data = self.eval_at_layer(batch.to(self.device))
+            if torch.is_tensor(batch):
+                batch = batch.to(self.device)
+
+            layer_data = self.eval_at_layer(batch)
             layer_data = layer_data.reshape(len(batch), -1)
 
             self.db.insert(layer_data)
@@ -89,21 +110,73 @@ class DataFilterer:
 
     def get_idxs(self,
                  semantic_percentage: float,
-                 outliar_percentage: float):
+                 outlier_percentage: float,
+                 downscale_dim: Union[int, None] = 50,
+                 downscale_method: str = "PCA") -> list:
         """
-        :param semantic_percentage: Fraction to remove semantically similar images
-        :param outliar_percentage: Fraction to remove outliers
+        :param semantic_percentage:
+        Fraction (0.0-1.0) to remove semantically similar images
+
+        :param outlier_percentage:
+        Fraction (0.0-1.0) to remove outliers
+
+        :param downscale_dim:
+        Parameter that specifies the dimensionality of the data during filtering
+        Higher values increase the accuracy of the filtering but take more time and memory
+        0 or None indicate maximal accuracy (downscale_dim=math.inf)
+        It is overridden to min(downscale_dim, n_dataset_items, n_feature_map_size)
+
+        :param downscale_method:
+        The method to reduce the dimensionality of the feature maps.
+        Supported are:
+        "PCA": Principal Component Analysis
+        "UMAP": Uniform Manifold Approximation and Projection
+        "T-SVD": Truncated SVD
+        "SRP": Sparse Random Projection
+        "GRP": Gaussian Random Projection
+
         :return: list of args, which describe the data that is kept in the dataset
         """
+        if semantic_percentage + outlier_percentage >= 1:
+            return []
         self.calc_db()
-        self.passed_idxs, self.failed_idxs, self.plot_points = self.db.get_idxs(outliar_percentage=outliar_percentage,
-                                                                                semantic_percentage=semantic_percentage)
-
+        self.passed_idxs, self.failed_idxs, self.plot_points = \
+            self.db.get_idxs(outlier_percentage=outlier_percentage,
+                             semantic_percentage=semantic_percentage,
+                             downscale_dim=math.inf if (downscale_dim in (0, None)) else downscale_dim,
+                             downscale_method=downscale_method)
+        self.db.__del__()
         return [self.data_args[idx] for idx in self.passed_idxs]
+
+    def get_filtered_out(self) -> tuple[dict, list]:
+        """
+        :similars:
+        A dictionary where keys represent items that were included in the filtered dataset
+        Values represent lists of items in the dataset that were classified as too semantically similar
+
+        :outliers:
+        List of detected outliers in the dataset
+
+        :return: similars, outliers
+        """
+        if not self.failed_idxs:
+            return {}, []
+        outliers = []
+        similars = dict()
+        for k, v in self.failed_idxs.items():
+            if v == [-1]:
+                outliers.append(self.data_args[k])
+                continue
+            similars[self.data_args[k]] = [self.data_args[x] for x in v]
+        return similars, outliers
 
     def get_fig(self, plt):
         """
-        :param plt: matplotlib.pyplot instance
+        :param plt:
+        from matplotlib import pyplot as plt
+        get_fig(plt)
+        plt.show()
+
         :return: figure that describes the dataset in 3D space
         """
         print("plotting", flush=True)

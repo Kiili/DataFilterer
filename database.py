@@ -1,9 +1,11 @@
 import time
 import warnings
 
+import gc
 import numpy as np
 import torch
 import hdbscan
+from torch.utils.dlpack import from_dlpack
 from sklearn.metrics.pairwise import cosine_distances
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.neighbors import NearestCentroid
@@ -33,7 +35,7 @@ class Cluster_filterer:
         #     self.db[self.item_idx] = batch
         #     self.item_idx += 1
 
-    def pca_incremental_cuda(self, features, batch_size, n_components=3):
+    def incremental_pca_cuda(self, features, batch_size, n_components=3):
         print("pca incremental ", end="", flush=True)
         s = time.time()
         import cuml
@@ -59,25 +61,39 @@ class Cluster_filterer:
         print(round(time.time() - s, 2), flush=True)
         return cudf.DataFrame(output)
 
-    def pca_incremental_cpu(self, features, batch_size, n_components=3):
+    def incremental_pca_cpu(self, features, batch_size, n_components=3):
         pca = IncrementalPCA(n_components=n_components, batch_size=batch_size)
         out = pca.fit_transform(features)
         return out
 
-    def pca(self, n_components, niter=50):
-        print("pca ", end="", flush=True)
+    def pca(self, n_components, output_type="tensor", niter=10):
+        print("PCA ", list(self.db.shape), "->", [self.db.shape[0], n_components], end=" ", flush=True)
         s = time.time()
-        if not torch.is_tensor(self.db):
-            self.db = torch.tensor(self.db, device=self.device)
-        U, _, _ = torch.pca_lowrank(A=self.db.to(self.device), q=n_components, niter=niter)
+        U, _, _ = torch.pca_lowrank(A=self.db, q=n_components, niter=niter)
+        if output_type == "numpy":
+            U = U.detach().cpu().numpy()
         print(round(time.time() - s, 2), flush=True)
         return U
+
+    def cuml_dim_reduction(self, n_components, f, name, output_type="tensor", **args):
+        print(name, list(self.db.shape), "->", [self.db.shape[0], n_components], end=" ", flush=True)
+        s = time.time()
+
+        model = f(n_components=n_components,
+                  output_type="cudf" if (output_type == "tensor") else output_type,
+                  **args,
+                  )
+        out = model.fit_transform(self.db)
+        if output_type == "tensor":
+            out = from_dlpack(out.to_dlpack())
+        print(round(time.time() - s, 2), flush=True)
+        return out
 
     def hdbscan_cuda(self, cluster_size, not_passed):
         import cuml
         print("hdbscan_cuda ", flush=True, end="")
         # maybe the only doc about this
-        # https://gitee.com/mirrors/cuML/blob/branch-23.06/python/cuml/cluster/hdbscan/hdbscan.pyx
+        # https://github.com/rapidsai/cuml/blob/branch-23.06/python/cuml/cluster/hdbscan/hdbscan.pyx
         hdb = cuml.cluster.HDBSCAN(min_cluster_size=cluster_size,
                                    max_cluster_size=cluster_size,
                                    allow_single_cluster=True,
@@ -88,14 +104,13 @@ class Cluster_filterer:
                                    )
 
         s = time.time()
-        hdb.fit(self.db)
+        hdb.fit(self.db, convert_dtype=False)
         print(round(time.time() - s, 2), flush=True)
         is_in = [i for i in range(len(hdb.labels_)) if hdb.labels_[i] == 0]
         for i, b in enumerate(hdb.labels_):
             if b != 0:
                 not_passed[i] = [-1]
-
-        self.db = self.db.take(is_in)
+        cuml.cluster.hdbscan.hdbscan.delete_hdbscan_output(hdb)
         return is_in
 
     def hdbscan_cpu(self, cluster_size, not_passed):
@@ -112,7 +127,6 @@ class Cluster_filterer:
             if b != 0:
                 not_passed[i] = [-1]
         is_in = [i for i in range(len(hdb.labels_)) if hdb.labels_[i] == 0]
-        self.db = self.db[is_in]
         return is_in
 
     def agg_cluster_cuda(self, num_clusters):
@@ -159,7 +173,7 @@ class Cluster_filterer:
         """
         print("cluster_centroids ", flush=True, end="")
         s = time.time()
-        nc = NearestCentroid(metric="cosine")
+        nc = NearestCentroid(metric="cosine")  # TODO cuda implementation of this
         with warnings.catch_warnings(record=True):
             nc.fit(self.db, cluster_labels)
         cluster_centers = nc.centroids_
@@ -167,7 +181,7 @@ class Cluster_filterer:
         dists = np.full(shape=(num_clusters,), fill_value=np.inf, dtype=float)
         idxs = np.zeros(shape=(num_clusters,), dtype=int)
 
-        for i, cluster_idx in enumerate(cluster_labels):
+        for i, cluster_idx in enumerate(cluster_labels):  # TODO cuda implementation of this
             dist = cosine_distances(self.db[i].reshape(1, -1), cluster_centers[cluster_idx].reshape(1, -1))[0]
             if dist < dists[cluster_idx]:
                 if dists[cluster_idx] != np.inf:
@@ -182,62 +196,89 @@ class Cluster_filterer:
         print(round(time.time() - s, 2), flush=True)
         return set(idxs)
 
-    def get_idxs(self, outliar_percentage, semantic_percentage):
+    def get_idxs(self, semantic_percentage, outlier_percentage, downscale_dim, downscale_method):
+        final_dataset_size = self.db.shape[0] - int(semantic_percentage * self.db.shape[0]) - int(
+            outlier_percentage * self.db.shape[0])
+        hdbscan_cluster_size = self.db.shape[0] - int(outlier_percentage * self.db.shape[0])
+
         f = self.get_idxs_cuda
         if self.device == torch.device("cpu"):
             f = self.get_idxs_cpu
 
-        return f(outliar_percentage, semantic_percentage)
+        return f(downscale_dim, final_dataset_size, hdbscan_cluster_size, downscale_method)
 
-    def get_idxs_cpu(self, outliar_percentage, semantic_percentage):
-        downscale_dim = min(*self.db.shape, 100)
-        plot_points = self.pca(3).cpu().numpy()
+    def get_idxs_cpu(self, downscale_dim, final_dataset_size, hdbscan_cluster_size, downscale_method):
+        downscale_dim = min(*self.db.shape, downscale_dim)
+        downscale_func = {
+            "PCA": lambda n_components, **args:
+            self.pca(n_components, **args),
+        }[downscale_method]
+
+        plot_points = downscale_func(n_components=3, output_type="numpy")
 
         if downscale_dim < self.db.shape[1]:
-            self.db = self.pca(n_components=downscale_dim)
+            self.db = downscale_func(n_components=downscale_dim)
 
         not_passed = dict()
-        out_dataset_size = int((1 - outliar_percentage - semantic_percentage) * self.db.shape[0])
         db_idxs = np.array(range(self.db.shape[0]), dtype=int)
 
         # outlier detection
-        cluster_size = int(self.db.shape[0] * (1 - outliar_percentage))
         self.db = self.db.numpy()
-        is_in = self.hdbscan_cpu(cluster_size, not_passed)
+        is_in = self.hdbscan_cpu(hdbscan_cluster_size, not_passed)
         db_idxs = db_idxs[is_in]
+        self.db = self.db[is_in]
 
         # clustering
-        num_clusters = out_dataset_size
-        cluster_labels = self.agg_cluster_cpu(num_clusters)
-        idxs = self.get_cluster_center_idxs(cluster_labels, num_clusters, db_idxs, not_passed)
+        cluster_labels = self.agg_cluster_cpu(final_dataset_size)
+        idxs = self.get_cluster_center_idxs(cluster_labels, final_dataset_size, db_idxs, not_passed)
 
         return idxs, not_passed, plot_points
 
-    def get_idxs_cuda(self, outliar_percentage, semantic_percentage):
-        import cudf
-        downscale_dim = min(*self.db.shape, 100)
-        plot_points = self.pca(3).cpu().numpy()
+    def get_idxs_cuda(self, downscale_dim, final_dataset_size, hdbscan_cluster_size, downscale_method):
+        import cuml
+        torch.cuda.empty_cache()
+        downscale_dim = min(*self.db.shape, downscale_dim)
+        downscale_func = {
+            "PCA": lambda n_components, **args:
+                self.pca(n_components, **args),
+            "UMAP": lambda n_components, **args:
+                self.cuml_dim_reduction(min(len(self.db) - 1, n_components), cuml.UMAP, "UMAP", **args),
+            "PCA_cuml": lambda n_components, **args:
+                self.cuml_dim_reduction(n_components, cuml.PCA, "PCA", **args),
+            "T-SVD": lambda n_components, **args:
+                self.cuml_dim_reduction(n_components, cuml.TruncatedSVD, "T-SVD", **args),
+            "SRP": lambda n_components, **args:
+                self.cuml_dim_reduction(n_components, cuml.random_projection.SparseRandomProjection, "SRP", **args),
+            "GRP": lambda n_components, **args:
+                self.cuml_dim_reduction(n_components, cuml.random_projection.GaussianRandomProjection, "GRP", **args),
+            }[downscale_method]
+
+        plot_points = downscale_func(n_components=3, output_type="numpy")
+        torch.cuda.empty_cache()
 
         if downscale_dim < self.db.shape[1]:
-            self.db = self.pca(n_components=downscale_dim)
+            self.db = downscale_func(n_components=downscale_dim)
+
+            # the feature maps were overwritten and torch does not free the cached memory
+            # this is done manually because it does not share same memory pool with cuml
+            torch.cuda.empty_cache()
 
         not_passed = dict()
-        out_dataset_size = int((1 - outliar_percentage - semantic_percentage) * self.db.shape[0])
         db_idxs = np.array(range(self.db.shape[0]), dtype=int)
 
         # outlier detection
-        cluster_size = int(self.db.shape[0] * (1 - outliar_percentage))
-        self.db = cudf.DataFrame(self.db)
-        is_in = self.hdbscan_cuda(cluster_size, not_passed)
+        is_in = self.hdbscan_cuda(hdbscan_cluster_size, not_passed)
         db_idxs = db_idxs[is_in]
+        self.db = self.db[is_in]
 
         # clustering
-        num_clusters = out_dataset_size
-        cluster_labels = self.agg_cluster_cuda(num_clusters)
-        self.db = self.db.to_numpy()
-        idxs = self.get_cluster_center_idxs(cluster_labels, num_clusters, db_idxs, not_passed)
+        cluster_labels = self.agg_cluster_cuda(final_dataset_size)
+        self.db = self.db.cpu().numpy()
+        idxs = self.get_cluster_center_idxs(cluster_labels, final_dataset_size, db_idxs, not_passed)
 
         return idxs, not_passed, plot_points
 
     def __del__(self):
         self.db = torch.Tensor().to(self.device)
+        torch.cuda.empty_cache()
+        gc.collect()
