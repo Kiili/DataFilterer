@@ -170,7 +170,7 @@ class DataFilterer:
             similars[self.data_args[k]] = [self.data_args[x] for x in v]
         return similars, outliers
 
-    def get_fig(self, plt):
+    def get_fig(self, plt, picker=False):
         """
         :param plt:
         from matplotlib import pyplot as plt
@@ -202,7 +202,9 @@ class DataFilterer:
         ax.scatter3D([a[0] for a in self.plot_points],
                      [a[1] for a in self.plot_points],
                      [a[2] for a in self.plot_points],
-                     c=colors)
+                     c=colors,
+                     picker=picker,  # if True, this reduces the performance of the plot by alot
+                     )
 
         for k, v in self.failed_idxs.items():
             if v != [-1]:

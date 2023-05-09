@@ -1,8 +1,12 @@
 import inspect
 import math
+import numpy as np
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter.filedialog import askopenfile
+
+import matplotlib
+from mpl_toolkits.mplot3d import proj3d
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import PIL
@@ -53,6 +57,7 @@ class app:
         self.dataset_items = None
         self.dataset_batches = None
         self.feature_map_shape = (0,)
+        self.clickable = False
         self.output_path: str = "out.txt"
         self.downscale_method = "PCA"
 
@@ -93,7 +98,7 @@ class app:
     def main_screen(self):
         frame = self.get_frame()
 
-        exit_btn = ttk.Button(frame, text="X", width=3, command=lambda: exit())
+        exit_btn = ttk.Button(frame, text="X", width=3, command=lambda: self.master.destroy())
         exit_btn.grid(row=0, column=99, sticky="E")
 
         self.add_model_info(frame, start_row=0)
@@ -280,11 +285,46 @@ class app:
         back_btn = ttk.Button(frame, text="Back", command=self.main_screen)
         frame.rowconfigure(1, weight=1)
 
-        fig = self.filterer_instance.get_fig(plt)
+        plot = [None]
 
-        plot = FigureCanvasTkAgg(fig, frame).get_tk_widget()
-        back_btn.grid(row=0, column=0, rowspan=1, columnspan=1, sticky="E")
-        plot.grid(row=1, column=0, rowspan=1, columnspan=1, sticky="N")
+        def set_clickable(state):
+            self.clickable = state
+            fig = self.filterer_instance.get_fig(plt, picker=self.clickable)
+            # clickable_checkbox.state(["selected"] if self.clickable else ["deselected"])
+
+            if self.clickable:
+                fig.canvas.mpl_connect('pick_event', onclick_plot_point)
+            if plot[0]:
+                plot[0].grid_forget()
+            plot[0] = FigureCanvasTkAgg(fig, frame).get_tk_widget()
+            plot[0].grid(row=1, column=0, rowspan=1, columnspan=2, sticky="N")
+
+        clickable_checkbox = ttk.Checkbutton(frame, text="Clickable", command=lambda: set_clickable(not self.clickable))
+
+        def onclick_plot_point(event):
+            if event.mouseevent.button != 1:  # not left mouse button
+                return
+            xx = event.mouseevent.x
+            yy = event.mouseevent.y
+            imin = 0
+            dmin = math.inf
+            ax = plt.gca()
+            for i in range(len(self.filterer_instance.plot_points)):
+                x2, y2, z2 = proj3d.proj_transform(self.filterer_instance.plot_points[i][0],
+                                                   self.filterer_instance.plot_points[i][1],
+                                                   self.filterer_instance.plot_points[i][2],
+                                                   ax.get_proj())
+                x3, y3 = ax.transData.transform((x2, y2))
+                d = np.sqrt((x3 - xx) ** 2 + (y3 - yy) ** 2)
+                if d < dmin:
+                    dmin = d
+                    imin = i
+            self.show_img_in_new_window(imin)
+
+        set_clickable(False)
+        back_btn.grid(row=0, column=1, rowspan=1, columnspan=1, sticky="E")
+        clickable_checkbox.grid(row=0, column=0, rowspan=1, columnspan=1, sticky="W")
+        # plot[0].grid(row=1, column=0, rowspan=1, columnspan=2, sticky="N")
 
     def view_images(self):
         frame = self.get_frame()
@@ -421,6 +461,42 @@ class app:
         bottom_frame    .grid(row=3, column=0, rowspan=1, columnspan=7, sticky="N")
         label1          .grid(row=0, column=0, rowspan=1, columnspan=3)
         image_box1      .grid(row=1, column=0, rowspan=1, columnspan=3)
+
+    def show_img_in_new_window(self, idx):
+
+        newWindow = tk.Toplevel(self.master)
+        newWindow.title("New Window")
+        newWindow.attributes('-type', 'dialog')
+        label1 = ttk.Label(newWindow, text=f"Point at {self.filterer_instance.plot_points[idx]}")
+        label2 = ttk.Label(newWindow, text=f"Point arg: {self.filterer_instance.data_args[idx]}")
+        exit_btn = ttk.Button(newWindow, text="X", width=3, command=lambda: newWindow.destroy())
+        resize_label = ttk.Label(newWindow, text="Resize")
+        resize_slider = ttk.Scale(newWindow, from_=-20, to=20, orient="horizontal", length=100)
+
+
+        img = Image.fromarray(self.filterable_instance.get_image(self.filterer_instance.data_args[idx]))
+        self.currentimg = [ImageTk.PhotoImage(image=img)]
+        img_label = ttk.Label(newWindow, image=self.currentimg[0])
+
+        def resize():
+            size_mult = 1.2 ** resize_slider.get()
+            size = (max(1, int(img.size[0] * size_mult)), max(1, int(img.size[1] * size_mult)))
+            self.currentimg = [ImageTk.PhotoImage(image=img.resize(size))]
+            img_label.config(image=self.currentimg[0])
+
+        resize_slider.bind("<ButtonRelease-1>", lambda x: resize())
+        resize_slider.set(0)
+
+        newWindow.columnconfigure(1, weight=1)
+
+        label1.grid(row=0, column=0, rowspan=1, columnspan=1, sticky="W")
+        label2.grid(row=1, column=0, rowspan=1, columnspan=1, sticky="W")
+        resize_label.grid(row=0, column=1, rowspan=1, columnspan=1, sticky="W")
+        resize_slider.grid(row=1, column=1, rowspan=1, columnspan=1, sticky="W")
+        exit_btn.grid(row=0, column=2, rowspan=2, columnspan=1, sticky="E")
+        img_label.grid(row=2, column=0, rowspan=1, columnspan=3, sticky="N")
+
+
 
     def choose_layer(self):
         frame = self.get_frame()
