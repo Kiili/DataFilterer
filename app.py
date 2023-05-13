@@ -1,8 +1,12 @@
 import inspect
 import math
+import numpy as np
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter.filedialog import askopenfile
+
+import matplotlib
+from mpl_toolkits.mplot3d import proj3d
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import PIL
@@ -48,15 +52,39 @@ class app:
         self.filterer_instance: DataFilterer = None
         self.semantic_percent: float = 0.0
         self.outlier_percent: float = 0.0
-        self.filter_downscale_dim: int = 100  # todo use/set this by the user
+        self.filter_downscale_dim: int | None = None  # todo optionally set this by the user
         self.chosen_layer: str = None
         self.dataset_items = None
         self.dataset_batches = None
         self.feature_map_shape = (0,)
+        self.clickable = False
         self.output_path: str = "out.txt"
+        self.downscale_method = "PCA"
 
         self.master = tk.Tk()
         self.master.minsize(400, 400)
+
+        # todo remove these
+        if 0:        # quick setup for testing
+            import examples.resnet32
+            self.filterable_instance = examples.resnet32.Resnet32Example()
+            self.chosen_class_name = "Resnet32Example"
+            self.chosen_layer = "avgpool"
+            self.semantic_percent = 0.05
+            self.outlier_percent = 0.05
+            self.filterer_instance = DataFilterer(self.filterable_instance, layer=self.chosen_layer)
+            self.dataset_items, self.dataset_batches = self.filterer_instance.get_dataset_info()
+            self.filterer_instance.get_idxs(semantic_percentage=self.semantic_percent, outlier_percentage=self.outlier_percent, downscale_dim=None, downscale_method=self.downscale_method)
+        if 0:        # quick setup for testing
+            import examples.yolov5
+            self.filterable_instance = examples.yolov5.Yolov5Example()
+            self.chosen_class_name = "Yolov5Example"
+            self.chosen_layer = "model.model.model.10"
+            self.semantic_percent = 0.1
+            self.outlier_percent = 0.1
+            self.filterer_instance = DataFilterer(self.filterable_instance, layer=self.chosen_layer)
+            self.dataset_items, self.dataset_batches = self.filterer_instance.get_dataset_info()
+            self.filterer_instance.get_idxs(semantic_percentage=self.semantic_percent, outlier_percentage=self.outlier_percent, downscale_dim=None, downscale_method=self.downscale_method)
 
         self.main_screen()
 
@@ -69,6 +97,9 @@ class app:
 
     def main_screen(self):
         frame = self.get_frame()
+
+        exit_btn = ttk.Button(frame, text="X", width=3, command=lambda: self.master.destroy())
+        exit_btn.grid(row=0, column=99, sticky="E")
 
         self.add_model_info(frame, start_row=0)
 
@@ -92,6 +123,7 @@ class app:
         if self.filterer_instance.plot_points is None:
             return
 
+        # View images and plot points buttons
         self.add_visualization_buttons(frame, start_row=13)
 
     def add_model_info(self, frame, start_row):
@@ -142,14 +174,20 @@ class app:
 
     def add_filtering_config(self, frame, start_row):
 
-        info_text10 = ttk.Label(frame, text=f"Filtering configuration")
-        info_text11 = ttk.Label(frame, text=f"Semantic similarities:")
-        info_text12 = ttk.Label(frame, text=f"Outliers:")
+        info_text0 = ttk.Label(frame, text=f"Filtering configuration")
+        info_text1 = ttk.Label(frame, text=f"Semantic similarities:")
+        info_text2 = ttk.Label(frame, text=f"Outliers:")
 
-        info_text13 = ttk.Label(frame, text=f"")
-        info_text14 = ttk.Label(frame, text=f"")
+        info_text3 = ttk.Label(frame, text=f"")
+        info_text4 = ttk.Label(frame, text=f"")
 
-        info_text15 = ttk.Label(frame, text=f"")
+        info_text5 = ttk.Label(frame, text=f"")
+
+        method = tk.StringVar()
+        def choose_method():
+            self.downscale_method = method.get()
+
+        choose_downscale_method_menu = ttk.OptionMenu(frame, method, self.downscale_method, "PCA", "UMAP", "T-SVD", "SRP", "GRP", command=lambda a: choose_method())
 
         semantic_percent_tbox = CustomText(frame, height=1, width=10,
                                            placeholder=str(self.semantic_percent * 100))
@@ -159,9 +197,9 @@ class app:
         def settext():
             i1 = int(self.semantic_percent * self.dataset_items)
             i2 = int(self.outlier_percent * self.dataset_items)
-            info_text13.config(text=f"{i1} removed")
-            info_text14.config(text=f"{i2} removed")
-            info_text15.config(text=f"Resulting dataset size: {max(0, self.dataset_items - i1 - i2)}")
+            info_text3.config(text=f"{i1} removed")
+            info_text4.config(text=f"{i2} removed")
+            info_text5.config(text=f"Resulting dataset size: {max(0, self.dataset_items - i1 - i2)}")
 
         def onModification_sem(event):
             percentage = event.widget.get("1.0", "end-1c")
@@ -193,23 +231,27 @@ class app:
             settext()
 
         frame.rowconfigure(start_row, minsize=20)
-        info_text10.grid(row=start_row + 1, column=0, rowspan=1, columnspan=4)
+        info_text0.grid(row=start_row + 1, column=0, rowspan=1, columnspan=4)
 
-        info_text11.grid(row=start_row + 2, column=0, rowspan=1, columnspan=1, sticky="E")
+        info_text1.grid(row=start_row + 2, column=0, rowspan=1, columnspan=1, sticky="E")
         semantic_percent_tbox.grid(row=start_row + 2, column=1, rowspan=1, columnspan=1, sticky="W")
-        info_text13.grid(row=start_row + 2, column=2, rowspan=1, columnspan=2, sticky="W")
+        info_text3.grid(row=start_row + 2, column=2, rowspan=1, columnspan=2, sticky="W")
 
-        info_text12.grid(row=start_row + 3, column=0, rowspan=1, columnspan=1, sticky="E")
+        choose_downscale_method_menu.grid(row=start_row + 2, column=4, rowspan=1, columnspan=1)
+
+        info_text2.grid(row=start_row + 3, column=0, rowspan=1, columnspan=1, sticky="E")
         outlier_percent_tbox.grid(row=start_row + 3, column=1, rowspan=1, columnspan=3, sticky="W")
-        info_text14.grid(row=start_row + 3, column=2, rowspan=1, columnspan=2, sticky="W")
+        info_text4.grid(row=start_row + 3, column=2, rowspan=1, columnspan=2, sticky="W")
 
-        info_text15.grid(row=start_row + 4, column=0, rowspan=1, columnspan=3)
+        info_text5.grid(row=start_row + 4, column=0, rowspan=1, columnspan=3)
 
     def add_filtering_button(self, frame, start_row):
 
         def filter():
-            idxs = self.filterer_instance.get_idxs(outliar_percentage=self.outlier_percent,
-                                                   semantic_percentage=self.semantic_percent)
+            idxs = self.filterer_instance.get_idxs(outlier_percentage=self.outlier_percent,
+                                                   semantic_percentage=self.semantic_percent,
+                                                   downscale_dim=self.filter_downscale_dim,
+                                                   downscale_method=self.downscale_method)
             with open(self.output_path, "w") as f:
                 for arg in idxs:
                     f.write(str(arg) + "\n")
@@ -227,7 +269,7 @@ class app:
         frame.rowconfigure(start_row, minsize=20)
         info_text1.grid(row=start_row + 1, column=0, rowspan=1, columnspan=1)
         output_folder_tbox.grid(row=start_row + 2, column=0, rowspan=1, columnspan=2)
-        filter_btn.grid(row=start_row + 2, column=3, rowspan=1, columnspan=1)
+        filter_btn.grid(row=start_row + 2, column=2, rowspan=1, columnspan=1)
 
     def add_visualization_buttons(self, frame, start_row):
         view_imgs_button = ttk.Button(frame, text="View images", command=self.view_images)
@@ -243,18 +285,53 @@ class app:
         back_btn = ttk.Button(frame, text="Back", command=self.main_screen)
         frame.rowconfigure(1, weight=1)
 
-        fig = self.filterer_instance.get_fig(plt)
+        plot = [None]
 
-        plot = FigureCanvasTkAgg(fig, frame).get_tk_widget()
-        back_btn.grid(row=0, column=0, rowspan=1, columnspan=1, sticky="E")
-        plot.grid(row=1, column=0, rowspan=1, columnspan=1, sticky="N")
+        def set_clickable(state):
+            self.clickable = state
+            fig = self.filterer_instance.get_fig(plt, picker=self.clickable)
+            # clickable_checkbox.state(["selected"] if self.clickable else ["deselected"])
+
+            if self.clickable:
+                fig.canvas.mpl_connect('pick_event', onclick_plot_point)
+            if plot[0]:
+                plot[0].grid_forget()
+            plot[0] = FigureCanvasTkAgg(fig, frame).get_tk_widget()
+            plot[0].grid(row=1, column=0, rowspan=1, columnspan=2, sticky="N")
+
+        clickable_checkbox = ttk.Checkbutton(frame, text="Clickable", command=lambda: set_clickable(not self.clickable))
+
+        def onclick_plot_point(event):
+            if event.mouseevent.button != 1:  # not left mouse button
+                return
+            xx = event.mouseevent.x
+            yy = event.mouseevent.y
+            imin = 0
+            dmin = math.inf
+            ax = plt.gca()
+            for i in range(len(self.filterer_instance.plot_points)):
+                x2, y2, z2 = proj3d.proj_transform(self.filterer_instance.plot_points[i][0],
+                                                   self.filterer_instance.plot_points[i][1],
+                                                   self.filterer_instance.plot_points[i][2],
+                                                   ax.get_proj())
+                x3, y3 = ax.transData.transform((x2, y2))
+                d = np.sqrt((x3 - xx) ** 2 + (y3 - yy) ** 2)
+                if d < dmin:
+                    dmin = d
+                    imin = i
+            self.show_img_in_new_window(imin)
+
+        set_clickable(False)
+        back_btn.grid(row=0, column=1, rowspan=1, columnspan=1, sticky="E")
+        clickable_checkbox.grid(row=0, column=0, rowspan=1, columnspan=1, sticky="W")
+        # plot[0].grid(row=1, column=0, rowspan=1, columnspan=2, sticky="N")
 
     def view_images(self):
         frame = self.get_frame()
 
         outliers = []
         similars = []
-        status = ["", 0]
+        status = ["", 0, True, 0]  # ["outliers"/"similars", image_idx, is_mosaic, non_mosaic_show_idx]
 
         for k, v in self.filterer_instance.failed_idxs.items():
             if v == [-1]:
@@ -262,27 +339,43 @@ class app:
                 continue
             similars.append([self.filterer_instance.data_args[k], [self.filterer_instance.data_args[x] for x in v]])
 
+        # header
         back_btn = ttk.Button(frame, text="Back", command=self.main_screen)
         status_text = ttk.Label(frame, text=f"")
 
-        similars_btn = ttk.Button(frame, text="Similars", command=lambda: mode("similars", 0))
-        outlier_btn = ttk.Button(frame, text="Outliers", command=lambda: mode("outliers", 0))
+        similars_btn = ttk.Button(frame, text="Similars", command=lambda: mode("similars", 0, status[2], status[3]))
+        outlier_btn = ttk.Button(frame, text="Outliers", command=lambda: mode("outliers", 0, status[2], status[3]))
 
-        next_btn = ttk.Button(frame, text="->", command=lambda: mode(status[0], status[1] + 1), width=2, state="disabled")
-        prev_btn = ttk.Button(frame, text="<-", command=lambda: mode(status[0], status[1] - 1), width=2, state="disabled")
+        mosaic_checkbox = ttk.Checkbutton(frame, text="Mosaic", command=lambda: mode(status[0], status[1], not status[2], status[3]), state="disabled")
+        mosaic_checkbox.state(["selected"])
+
+        next_btn = ttk.Button(frame, text="->", command=lambda: mode(status[0], status[1] + 1, status[2], status[3]), width=2, state="disabled")
+        prev_btn = ttk.Button(frame, text="<-", command=lambda: mode(status[0], status[1] - 1, status[2], status[3]), width=2, state="disabled")
 
         resize_slider = ttk.Scale(frame, from_=-20, to=20, orient="horizontal", length=100)
         resize_slider.set(0)
 
-        resize_label = ttk.Label(frame, text="Resize image")
-        image_box = ttk.Label(frame)
+        resize_label = ttk.Label(frame, text="Resize")
 
-        def mode(img_type, index):
+        # lower part
+        bottom_frame = ttk.Frame(frame)
+
+        label1 = ttk.Label(bottom_frame, text="core img")
+        label2 = ttk.Label(bottom_frame, text=f"{0}/{0}")
+        next_similar_btn = ttk.Button(bottom_frame, text="->", command=lambda: mode(status[0], status[1], status[2], status[3] + 1), width=2, state="disabled")
+        prev_similar_btn = ttk.Button(bottom_frame, text="<-", command=lambda: mode(status[0], status[1], status[2], status[3] - 1), width=2, state="disabled")
+        image_box1 = ttk.Label(bottom_frame)
+        image_box2 = ttk.Label(bottom_frame)
+
+        def mode(img_type, index, is_mosaic, similar_idx):
             status[0] = img_type
             max_len = {"similars": len(similars),
                        "outliers": len(outliers),
                        }.get(status[0], 0)
             status[1] = min(max(0, index), max_len - 1)
+            status[2] = is_mosaic
+            status[3] = similar_idx
+
             prev_btn["state"] = "disabled" if status[1] <= 0 else "enabled"
             next_btn["state"] = "disabled" if status[1] >= max_len - 1 else "enabled"
 
@@ -294,41 +387,116 @@ class app:
             size_mult = 1.2 ** resize_slider.get()
             if status[0] == "similars":
                 similars_btn["state"] = "disabled"
+                mosaic_checkbox["state"] = "enabled"
+                label1.config(text=f"Image")
                 img = Image.fromarray(self.filterable_instance.get_image(similars[status[1]][0]))
-                others = [Image.fromarray(self.filterable_instance.get_image(i)) for i in similars[status[1]][1]]
-                grid, grid_size = fit_imgs_to_grid(others)
-                img = img.resize(size=grid.size)
-                img = concat_PIL_h(img, grid)
-                img = img.resize((max(1, int(img.size[0] * size_mult / grid_size)),
-                                  max(1, int(img.size[1] * size_mult / grid_size))))
+                size = (max(1, int(img.size[0] * size_mult)), max(1, int(img.size[1] * size_mult)))
+
+                label2.grid(row=0, column=4, rowspan=1, columnspan=1)
+                image_box2.grid(row=1, column=3, rowspan=1, columnspan=3)
+
+                if status[2]:  # Not mosaic
+                    prev_similar_btn.grid_forget()
+                    next_similar_btn.grid_forget()
+                    label2.config(text=f"Removed similarities")
+                    others = [Image.fromarray(self.filterable_instance.get_image(i)) for i in similars[status[1]][1]]
+                    other = fit_imgs_to_grid(others)
+                    status[3] = 0
+
+                else:  # Mosaic
+                    other_len = len(similars[status[1]][1])
+                    status[3] = min(max(0, status[3]), other_len - 1)
+                    label2.config(text=f"{str(status[3] + 1).zfill(len(str(other_len)))}/{other_len}")
+                    prev_similar_btn["state"] = "disabled" if status[3] <= 0 else "enabled"
+                    next_similar_btn["state"] = "disabled" if status[3] >= other_len - 1 else "enabled"
+                    prev_similar_btn.grid(row=0, column=3, rowspan=1, columnspan=1, sticky="E")
+                    next_similar_btn.grid(row=0, column=5, rowspan=1, columnspan=1, sticky="W")
+                    other = Image.fromarray(self.filterable_instance.get_image(similars[status[1]][1][status[3]]))
+
+                # image that is shown in tk.Label must be kept active in memory so it does not get garbage collected
+                # https://stackoverflow.com/questions/16424091/why-does-tkinter-image-not-show-up-if-created-in-a-function
+                self.currentimg = [ImageTk.PhotoImage(image=img.resize(size)), ImageTk.PhotoImage(image=other.resize(size))]
+                image_box1.config(image=self.currentimg[0])
+                image_box2.config(image=self.currentimg[1])
+
             elif status[0] == "outliers":
                 outlier_btn["state"] = "disabled"
+                mosaic_checkbox["state"] = "disabled"
+                label2.grid_forget()
+                image_box2.grid_forget()
+                prev_similar_btn.grid_forget()
+                next_similar_btn.grid_forget()
+                status[3] = 0
+                label1.config(text=f"Outlier")
                 img = Image.fromarray(self.filterable_instance.get_image(outliers[status[1]]))
-                img = img.resize((int(img.size[0] * size_mult), int(img.size[1] * size_mult)))
+                img = img.resize((max(1, int(img.size[0] * size_mult)), max(1, int(img.size[1] * size_mult))))
+                self.currentimg = ImageTk.PhotoImage(image=img)
+                image_box1.config(image=self.currentimg)
             else:
                 return
 
-            # image that is shown in tk.Label must be kept active in memory so it does not get garbage collected
-            # https://stackoverflow.com/questions/16424091/why-does-tkinter-image-not-show-up-if-created-in-a-function
-            self.currentimg = ImageTk.PhotoImage(image=img)
-            image_box.config(image=self.currentimg)
+
+
+
 
         resize_slider.bind("<ButtonRelease-1>", lambda x: mode(*status))
         mode(*status)
 
-        frame.columnconfigure(5, weight=1)
+        frame.columnconfigure(6, weight=1)
 
-        similars_btn.grid(row=0, column=0, rowspan=1, columnspan=1)
-        outlier_btn.grid(row=1, column=0, rowspan=1, columnspan=1)
-        prev_btn.grid(row=0, column=1, rowspan=2, columnspan=1, sticky="E", padx=(5, 0))
-        status_text.grid(row=0, column=3, rowspan=2, columnspan=1)
-        next_btn.grid(row=0, column=4, rowspan=2, columnspan=1, sticky="W", padx=(0, 5))
+        similars_btn    .grid(row=0, column=0, rowspan=1, columnspan=1)
+        outlier_btn     .grid(row=1, column=0, rowspan=1, columnspan=1)
 
-        resize_label.grid(row=0, column=5, rowspan=1, columnspan=1, sticky="W")
-        resize_slider.grid(row=1, column=5, rowspan=1, columnspan=1, sticky="W")
+        mosaic_checkbox .grid(row=0, column=1, rowspan=1, columnspan=3, padx=(5, 5))
 
-        back_btn.grid(row=0, column=6, rowspan=2, columnspan=1, sticky="E")
-        image_box.grid(row=2, column=0, rowspan=1, columnspan=7)
+        prev_btn        .grid(row=1, column=1, rowspan=1, columnspan=1, sticky="E", padx=(5, 0))
+        status_text     .grid(row=1, column=2, rowspan=1, columnspan=1)
+        next_btn        .grid(row=1, column=3, rowspan=1, columnspan=1, sticky="W", padx=(0, 5))
+
+        resize_label    .grid(row=0, column=5, rowspan=1, columnspan=1)
+        resize_slider   .grid(row=1, column=5, rowspan=1, columnspan=1, sticky="W")
+
+        back_btn        .grid(row=0, column=6, rowspan=2, columnspan=1, sticky="E")
+
+        bottom_frame    .grid(row=3, column=0, rowspan=1, columnspan=7, sticky="N")
+        label1          .grid(row=0, column=0, rowspan=1, columnspan=3)
+        image_box1      .grid(row=1, column=0, rowspan=1, columnspan=3)
+
+    def show_img_in_new_window(self, idx):
+
+        newWindow = tk.Toplevel(self.master)
+        newWindow.title("New Window")
+        newWindow.attributes('-type', 'dialog')
+        label1 = ttk.Label(newWindow, text=f"Point at {self.filterer_instance.plot_points[idx]}")
+        label2 = ttk.Label(newWindow, text=f"Point arg: {self.filterer_instance.data_args[idx]}")
+        exit_btn = ttk.Button(newWindow, text="X", width=3, command=lambda: newWindow.destroy())
+        resize_label = ttk.Label(newWindow, text="Resize")
+        resize_slider = ttk.Scale(newWindow, from_=-20, to=20, orient="horizontal", length=100)
+
+
+        img = Image.fromarray(self.filterable_instance.get_image(self.filterer_instance.data_args[idx]))
+        self.currentimg = [ImageTk.PhotoImage(image=img)]
+        img_label = ttk.Label(newWindow, image=self.currentimg[0])
+
+        def resize():
+            size_mult = 1.2 ** resize_slider.get()
+            size = (max(1, int(img.size[0] * size_mult)), max(1, int(img.size[1] * size_mult)))
+            self.currentimg = [ImageTk.PhotoImage(image=img.resize(size))]
+            img_label.config(image=self.currentimg[0])
+
+        resize_slider.bind("<ButtonRelease-1>", lambda x: resize())
+        resize_slider.set(0)
+
+        newWindow.columnconfigure(1, weight=1)
+
+        label1.grid(row=0, column=0, rowspan=1, columnspan=1, sticky="W")
+        label2.grid(row=1, column=0, rowspan=1, columnspan=1, sticky="W")
+        resize_label.grid(row=0, column=1, rowspan=1, columnspan=1, sticky="W")
+        resize_slider.grid(row=1, column=1, rowspan=1, columnspan=1, sticky="W")
+        exit_btn.grid(row=0, column=2, rowspan=2, columnspan=1, sticky="E")
+        img_label.grid(row=2, column=0, rowspan=1, columnspan=3, sticky="N")
+
+
 
     def choose_layer(self):
         frame = self.get_frame()
@@ -440,7 +608,7 @@ def fit_imgs_to_grid(imgs):
                 im = imgs[i * grid_size + j]
             row = concat_PIL_h(row, im)
         out = concat_PIL_v(out, row)
-    return out, grid_size
+    return out
 
 
 def concat_PIL_h(im1: PIL.Image, im2: PIL.Image):

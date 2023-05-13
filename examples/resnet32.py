@@ -1,7 +1,7 @@
+import math
+
 import numpy as np
 import torch
-from torch import nn
-from torch.utils.data import DataLoader
 import torchvision
 from torchvision import transforms
 
@@ -10,7 +10,7 @@ from filterable_interface import FilterableInterface
 
 class CIFAR10Dataset(torchvision.datasets.CIFAR10):
     def __init__(self):
-        super().__init__(root='./data',
+        super().__init__('./data/cifar-10',
                          train=True,
                          download=True,
                          transform=transforms.Compose([
@@ -19,7 +19,7 @@ class CIFAR10Dataset(torchvision.datasets.CIFAR10):
                                                   std=[0.229, 0.224, 0.225])]))
 
     # def __len__(self):
-    #     return 3000
+    #     return 10000
 
     def __getitem__(self, idx):
         img, label = super().__getitem__(index=idx)
@@ -34,12 +34,12 @@ class Resnet32Example(FilterableInterface):
         # A pretrained model on CIFAR10
         self.model = torch.hub.load("chenyaofo/pytorch-cifar-models", "cifar10_resnet32", pretrained=True)
 
-        self.filterable_dataset = DataLoader(dataset=CIFAR10Dataset(), batch_size=128)
+        self.filterable_dataset = torch.utils.data.DataLoader(dataset=CIFAR10Dataset(), batch_size=128)
 
         # dataset without transformations for viewing images
-        self.dataset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True)
+        self.dataset = torchvision.datasets.CIFAR10(root='./data/cifar-10', train=True, download=True)
 
-    def get_model(self) -> nn.Module:
+    def get_model(self) -> torch.nn.Module:
         return self.model
 
     def get_filterable_dataset(self):
@@ -58,14 +58,20 @@ if __name__ == '__main__':
                                      layer="avgpool",  # see print(model) for layer names
                                      device="cuda")
 
-    idxs = filterer_instance.get_idxs(outliar_percentage=0.01,
-                                      semantic_percentage=0.09)
+    idxs = filterer_instance.get_idxs(semantic_percentage=0.09,
+                                      outlier_percentage=0.01,
+                                      downscale_dim=None  # no dimensionality reduction to maximize accuracy
+                                      )
+    # :idxs: images that are in the filtered dataset
 
-    print(idxs)  # the indexes of images that are in the filtered dataset
+    similars, outliers = filterer_instance.get_filtered_out()
+    # :similars: dict(k, v) where v images were filtered out and considered too similar to k
+    # :outliers: images that were considered as outliers
 
     # visualize the dataset
     import matplotlib as mpl
     from matplotlib import pyplot as plt
+
     mpl.use("GTK3Agg")
     filterer_instance.get_fig(plt)
     plt.show()

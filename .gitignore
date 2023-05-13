@@ -3,3 +3,4 @@ data
 __pycache__/
 out.txt
 dist
+yolov5s.pt
