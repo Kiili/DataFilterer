@@ -9,7 +9,8 @@ class DataFilterer:
     def __init__(self,
                  model: FilterableInterface,
                  layer: str,
-                 device: str | torch.device | None = None):
+                 device: torch.device = None):
+                #  device: str | torch.device | None = None):
         self.model = model
         self.layer = layer
         self.data_args = []
