@@ -138,7 +138,7 @@ class DataFilterer:
         self.db.__del__()
         return [self.data_args[idx] for idx in self.passed_idxs]
 
-    def get_filtered_out(self) -> tuple[dict, list]:
+    def get_filtered_out(self) -> tuple:
         """
         :similars:
         A dictionary where keys represent items that were included in the filtered dataset
