@@ -67,7 +67,8 @@ if __name__ == '__main__':
 
     idxs = filterer_instance.get_idxs(semantic_percentage=0.09,
                                       outlier_percentage=0.01,
-                                      downscale_dim=None  # no dimensionality reduction to maximize accuracy
+                                      downscale_dim=None,  # no dimensionality reduction to maximize accuracy
+                                      downscale_method="UMAP",
                                       )
     # :idxs: images that are in the filtered dataset
 

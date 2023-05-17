@@ -28,6 +28,8 @@ class Cluster_filterer:
         # cache feature maps to (v)ram
         x = x.to(self.device)
         self.db = torch.cat((self.db, x), dim=0)
+        if self.device != torch.device("cpu"):
+            torch.cuda.empty_cache()
 
         # cache feature maps to disk
         # x = x.cpu().numpy()
@@ -58,7 +60,7 @@ class Cluster_filterer:
         import cupy as cp
         output, _, _, _ = cuml.internals.input_utils.input_to_cuml_array(cp.vstack(output), order='K')
 
-        print(round(time.time() - s, 2), flush=True)
+        print(f"{round(time.time() - s, 2)}s", flush=True)
         return cudf.DataFrame(output)
 
     def incremental_pca_cpu(self, features, batch_size, n_components=3):
@@ -72,7 +74,7 @@ class Cluster_filterer:
         U, _, _ = torch.pca_lowrank(A=self.db, q=n_components, niter=niter)
         if output_type == "numpy":
             U = U.detach().cpu().numpy()
-        print(round(time.time() - s, 2), flush=True)
+        print(f"{round(time.time() - s, 2)}s", flush=True)
         return U
 
     def cuml_dim_reduction(self, n_components, f, name, output_type="tensor", **args):
@@ -86,7 +88,7 @@ class Cluster_filterer:
         out = model.fit_transform(self.db)
         if output_type == "tensor":
             out = from_dlpack(out.to_dlpack())
-        print(round(time.time() - s, 2), flush=True)
+        print(f"{round(time.time() - s, 2)}s", flush=True)
         return out
 
     def hdbscan_cuda(self, cluster_size, not_passed):
@@ -105,7 +107,7 @@ class Cluster_filterer:
 
         s = time.time()
         hdb.fit(self.db, convert_dtype=False)
-        print(round(time.time() - s, 2), flush=True)
+        print(f"{round(time.time() - s, 2)}s", flush=True)
         is_in = [i for i in range(len(hdb.labels_)) if hdb.labels_[i] == 0]
         for i, b in enumerate(hdb.labels_):
             if b != 0:
@@ -122,7 +124,7 @@ class Cluster_filterer:
                               )
         s = time.time()
         hdb.fit(self.db)
-        print(round(time.time() - s, 2), flush=True)
+        print(f"{round(time.time() - s, 2)}s", flush=True)
         for i, b in enumerate(hdb.labels_):
             if b != 0:
                 not_passed[i] = [-1]
@@ -140,7 +142,7 @@ class Cluster_filterer:
                                                  )
         s = time.time()
         clusterer.fit(self.db)
-        print(round(time.time() - s, 2), flush=True)
+        print(f"{round(time.time() - s, 2)}s", flush=True)
         return clusterer.labels_
 
     def agg_cluster_cpu(self, num_clusters):
@@ -155,7 +157,7 @@ class Cluster_filterer:
                                             )
         s = time.time()
         clusterer.fit(self.db)
-        print(round(time.time() - s, 2), flush=True)
+        print(f"{round(time.time() - s, 2)}s", flush=True)
         return clusterer.labels_
 
     def get_cluster_center_idxs(self, cluster_labels, num_clusters, db_idxs, not_passed):
@@ -193,7 +195,7 @@ class Cluster_filterer:
                 idxs[cluster_idx] = db_idxs[i]
             else:
                 not_passed[idxs[cluster_idx]] = not_passed.get(idxs[cluster_idx], []) + [db_idxs[i]]
-        print(round(time.time() - s, 2), flush=True)
+        print(f"{round(time.time() - s, 2)}s", flush=True)
         return set(idxs)
 
     def get_idxs(self, semantic_percentage, outlier_percentage, downscale_dim, downscale_method):
@@ -257,7 +259,7 @@ class Cluster_filterer:
         torch.cuda.empty_cache()
 
         if downscale_dim < self.db.shape[1]:
-            self.db = downscale_func(n_components=downscale_dim)
+            self.db = downscale_func(n_components=downscale_dim) if downscale_dim != 3 else torch.tensor(plot_points, device=self.device)
 
             # the feature maps were overwritten and torch does not free the cached memory
             # this is done manually because it does not share same memory pool with cuml

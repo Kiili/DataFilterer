@@ -1,9 +1,10 @@
+import gc
 import math
 import time
-from typing import Union
+from typing import Union, Tuple
 
-import matplotlib
 import torch
+
 
 from filterable_interface import FilterableInterface
 from database import Cluster_filterer
@@ -13,7 +14,7 @@ class DataFilterer:
     def __init__(self,
                  model: FilterableInterface,
                  layer: str,
-                 device: str | torch.device | None = None):
+                 device: Union[str, torch.device, None] = None):
         """
         :param model: Class instance that extends FilterableInterface
         See FilterableInterface contents for details
@@ -124,7 +125,7 @@ class DataFilterer:
         Parameter that specifies the dimensionality of the data during filtering
         Higher values increase the accuracy of the filtering but take more time and memory
         0 or None indicate maximal accuracy (downscale_dim=math.inf)
-        It is overridden to min(downscale_dim, n_dataset_items, n_feature_map_size)
+        The final value is overridden to min(downscale_dim, n_dataset_items, n_feature_map_size)
 
         :param downscale_method:
         The method to reduce the dimensionality of the feature maps.
@@ -137,6 +138,9 @@ class DataFilterer:
 
         :return: list of args, which describe the data that is kept in the dataset
         """
+        if self.device != torch.device("cpu"):
+            torch.cuda.empty_cache()
+            gc.collect()
         if semantic_percentage + outlier_percentage >= 1:
             return []
         self.calc_db()
@@ -148,11 +152,11 @@ class DataFilterer:
         self.db.__del__()
         return [self.data_args[idx] for idx in self.passed_idxs]
 
-    def get_filtered_out(self) -> tuple[dict, list]:
+    def get_filtered_out(self) -> Tuple[dict, list]:
         """
         :similars:
         A dictionary where keys represent items that were included in the filtered dataset
-        Values represent lists of items in the dataset that were classified as too semantically similar
+        Values represent lists of items in the dataset that were classified as too semantically similar to the key
 
         :outliers:
         List of detected outliers in the dataset
@@ -179,7 +183,6 @@ class DataFilterer:
 
         :return: figure that describes the dataset in 3D space
         """
-        print("plotting", flush=True)
         fig = plt.figure()
 
         ax = fig.add_subplot(111, projection='3d')
@@ -206,12 +209,20 @@ class DataFilterer:
                      picker=picker,  # if True, this reduces the performance of the plot by alot
                      )
 
+        # legend
+        from matplotlib.lines import Line2D
+        p1 = Line2D([0], [0], marker='o', color='w', label='Dataset', markerfacecolor=(0, 1, 0, 0.3), markersize=8)
+        p2 = Line2D([0], [0], marker='o', color='w', label='Outliers', markerfacecolor=(1, 0, 0, 1), markersize=8)
+        p3 = Line2D([0], [0], marker='o', color='w', label='Similars', markerfacecolor=(0, 0, 1, 1), markersize=8)
+        plt.legend(handles=[p1, p2, p3], loc="upper right")
+
         for k, v in self.failed_idxs.items():
             if v != [-1]:
                 for item in v:
                     ax.plot([self.plot_points[k][0], self.plot_points[item][0]],
                             [self.plot_points[k][1], self.plot_points[item][1]],
                             zs=[self.plot_points[k][2], self.plot_points[item][2]])
+
         fig.tight_layout()
         return fig
 

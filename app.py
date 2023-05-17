@@ -1,11 +1,13 @@
+
 import inspect
 import math
+from typing import Union
+
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter.filedialog import askopenfile
 
-import matplotlib
 from mpl_toolkits.mplot3d import proj3d
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
@@ -52,14 +54,16 @@ class app:
         self.filterer_instance: DataFilterer = None
         self.semantic_percent: float = 0.0
         self.outlier_percent: float = 0.0
-        self.filter_downscale_dim: int | None = None  # todo optionally set this by the user
+        self.filter_downscale_dim: Union[int, None] = 100
         self.chosen_layer: str = None
         self.dataset_items = None
         self.dataset_batches = None
         self.feature_map_shape = (0,)
+        self.feature_map_dim = 0
         self.clickable = False
         self.output_path: str = "out.txt"
-        self.downscale_method = "PCA"
+        self.downscale_method = "UMAP"
+        self.currentimg = []
 
         self.master = tk.Tk()
         self.master.minsize(400, 400)
@@ -69,13 +73,14 @@ class app:
             import examples.resnet32
             self.filterable_instance = examples.resnet32.Resnet32Example()
             self.chosen_class_name = "Resnet32Example"
-            self.chosen_layer = "avgpool"
+            self.chosen_layer = "layer2"
             self.semantic_percent = 0.05
             self.outlier_percent = 0.05
             self.filterer_instance = DataFilterer(self.filterable_instance, layer=self.chosen_layer)
             self.dataset_items, self.dataset_batches = self.filterer_instance.get_dataset_info()
-            self.filterer_instance.get_idxs(semantic_percentage=self.semantic_percent, outlier_percentage=self.outlier_percent, downscale_dim=None, downscale_method=self.downscale_method)
-        if 0:        # quick setup for testing
+            self.filterer_instance.get_idxs(semantic_percentage=self.semantic_percent, outlier_percentage=self.outlier_percent,
+                                            downscale_dim=self.filter_downscale_dim, downscale_method=self.downscale_method)
+        if 0: # quick setup for testing
             import examples.yolov5
             self.filterable_instance = examples.yolov5.Yolov5Example()
             self.chosen_class_name = "Yolov5Example"
@@ -84,7 +89,8 @@ class app:
             self.outlier_percent = 0.1
             self.filterer_instance = DataFilterer(self.filterable_instance, layer=self.chosen_layer)
             self.dataset_items, self.dataset_batches = self.filterer_instance.get_dataset_info()
-            self.filterer_instance.get_idxs(semantic_percentage=self.semantic_percent, outlier_percentage=self.outlier_percent, downscale_dim=None, downscale_method=self.downscale_method)
+            self.filterer_instance.get_idxs(semantic_percentage=self.semantic_percent, outlier_percentage=self.outlier_percent,
+                                            downscale_dim=self.filter_downscale_dim, downscale_method=self.downscale_method)
 
         self.main_screen()
 
@@ -150,11 +156,11 @@ class app:
 
         info_text4 = ttk.Label(frame, text=f"Items")
         info_text5 = ttk.Label(frame, text=f"Batches")
-        info_text6 = ttk.Label(frame, text=f"Feature map shape")
+        info_text6 = ttk.Label(frame, text=f"Feature map\ndimensionality")
 
         info_text7 = ttk.Label(frame, text=f"{self.dataset_items} ")
         info_text8 = ttk.Label(frame, text=f"{self.dataset_batches}")
-        info_text9 = ttk.Label(frame, text=f"{self.filterer_instance.get_feature_map_shape()}")
+        info_text9 = ttk.Label(frame, text=f"{self.feature_map_dim}")
 
         frame.rowconfigure(start_row, minsize=20)
         info_text3.grid(row=start_row + 1, column=0, rowspan=1, columnspan=3)
@@ -187,12 +193,14 @@ class app:
         def choose_method():
             self.downscale_method = method.get()
 
-        choose_downscale_method_menu = ttk.OptionMenu(frame, method, self.downscale_method, "PCA", "UMAP", "T-SVD", "SRP", "GRP", command=lambda a: choose_method())
+        choose_downscale_method_menu = ttk.OptionMenu(frame, method, self.downscale_method, "UMAP", "PCA", "T-SVD", "SRP", "GRP", command=lambda a: choose_method())
+        override_downscale_dim_tbox = CustomText(frame, height=1, width=10, placeholder=str(self.filter_downscale_dim))
 
-        semantic_percent_tbox = CustomText(frame, height=1, width=10,
-                                           placeholder=str(self.semantic_percent * 100))
-        outlier_percent_tbox = CustomText(frame, height=1, width=10,
-                                          placeholder=str(self.outlier_percent * 100))
+        info_text6 = ttk.Label(frame, text=f"Downscale method")
+        info_text7 = ttk.Label(frame, text=f"Downscale\ndimensionality")
+
+        semantic_percent_tbox = CustomText(frame, height=1, width=10, placeholder=str(self.semantic_percent * 100))
+        outlier_percent_tbox = CustomText(frame, height=1, width=10, placeholder=str(self.outlier_percent * 100))
 
         def settext():
             i1 = int(self.semantic_percent * self.dataset_items)
@@ -225,8 +233,17 @@ class app:
             if None not in (self.dataset_items, self.dataset_batches):
                 settext()
 
+        def onModification_dim(event):
+            val = event.widget.get("1.0", "end-1c")
+            try:
+                val = int(val.strip())
+            except:
+                val = None
+            self.filter_downscale_dim = val
+
         semantic_percent_tbox.bind("<<TextModified>>", onModification_sem)
         outlier_percent_tbox.bind("<<TextModified>>", onModification_out)
+        override_downscale_dim_tbox.bind("<<TextModified>>", onModification_dim)
         if None not in (self.dataset_items, self.dataset_batches):
             settext()
 
@@ -237,7 +254,11 @@ class app:
         semantic_percent_tbox.grid(row=start_row + 2, column=1, rowspan=1, columnspan=1, sticky="W")
         info_text3.grid(row=start_row + 2, column=2, rowspan=1, columnspan=2, sticky="W")
 
+        info_text6.grid(row=start_row + 1, column=4, rowspan=1, columnspan=1)
         choose_downscale_method_menu.grid(row=start_row + 2, column=4, rowspan=1, columnspan=1)
+
+        info_text7.grid(row=start_row + 3, column=4, rowspan=1, columnspan=1)
+        override_downscale_dim_tbox.grid(row=start_row + 4, column=4, rowspan=1, columnspan=1)
 
         info_text2.grid(row=start_row + 3, column=0, rowspan=1, columnspan=1, sticky="E")
         outlier_percent_tbox.grid(row=start_row + 3, column=1, rowspan=1, columnspan=3, sticky="W")
@@ -248,10 +269,11 @@ class app:
     def add_filtering_button(self, frame, start_row):
 
         def filter():
+
             idxs = self.filterer_instance.get_idxs(outlier_percentage=self.outlier_percent,
-                                                   semantic_percentage=self.semantic_percent,
-                                                   downscale_dim=self.filter_downscale_dim,
-                                                   downscale_method=self.downscale_method)
+                                               semantic_percentage=self.semantic_percent,
+                                               downscale_dim=self.filter_downscale_dim,
+                                               downscale_method=self.downscale_method)
             with open(self.output_path, "w") as f:
                 for arg in idxs:
                     f.write(str(arg) + "\n")
@@ -281,6 +303,7 @@ class app:
 
     def visualize_dataset(self):
         from matplotlib import pyplot as plt
+
         frame = self.get_frame()
         back_btn = ttk.Button(frame, text="Back", command=self.main_screen)
         frame.rowconfigure(1, weight=1)
@@ -288,14 +311,15 @@ class app:
         plot = [None]
 
         def set_clickable(state):
+            plt.close()
             self.clickable = state
             fig = self.filterer_instance.get_fig(plt, picker=self.clickable)
-            # clickable_checkbox.state(["selected"] if self.clickable else ["deselected"])
 
             if self.clickable:
                 fig.canvas.mpl_connect('pick_event', onclick_plot_point)
             if plot[0]:
                 plot[0].grid_forget()
+
             plot[0] = FigureCanvasTkAgg(fig, frame).get_tk_widget()
             plot[0].grid(row=1, column=0, rowspan=1, columnspan=2, sticky="N")
 
@@ -309,6 +333,9 @@ class app:
             imin = 0
             dmin = math.inf
             ax = plt.gca()
+            # matplotlibs 3d point picking is bugged. To find out, which point is clicked, the points are projected
+            # on a 2D plane from the viewpoint and the closest one to the mouse event is found
+            # https://stackoverflow.com/questions/58218482/annotate-3d-scatter-plot-on-pick-event
             for i in range(len(self.filterer_instance.plot_points)):
                 x2, y2, z2 = proj3d.proj_transform(self.filterer_instance.plot_points[i][0],
                                                    self.filterer_instance.plot_points[i][1],
@@ -324,7 +351,6 @@ class app:
         set_clickable(False)
         back_btn.grid(row=0, column=1, rowspan=1, columnspan=1, sticky="E")
         clickable_checkbox.grid(row=0, column=0, rowspan=1, columnspan=1, sticky="W")
-        # plot[0].grid(row=1, column=0, rowspan=1, columnspan=2, sticky="N")
 
     def view_images(self):
         frame = self.get_frame()
@@ -338,6 +364,7 @@ class app:
                 outliers.append(self.filterer_instance.data_args[k])
                 continue
             similars.append([self.filterer_instance.data_args[k], [self.filterer_instance.data_args[x] for x in v]])
+        similars.sort(key=lambda x: -len(x[1]))
 
         # header
         back_btn = ttk.Button(frame, text="Back", command=self.main_screen)
@@ -395,7 +422,7 @@ class app:
                 label2.grid(row=0, column=4, rowspan=1, columnspan=1)
                 image_box2.grid(row=1, column=3, rowspan=1, columnspan=3)
 
-                if status[2]:  # Not mosaic
+                if status[2]:  # Mosaic
                     prev_similar_btn.grid_forget()
                     next_similar_btn.grid_forget()
                     label2.config(text=f"Removed similarities")
@@ -403,7 +430,7 @@ class app:
                     other = fit_imgs_to_grid(others)
                     status[3] = 0
 
-                else:  # Mosaic
+                else:  # Not Mosaic
                     other_len = len(similars[status[1]][1])
                     status[3] = min(max(0, status[3]), other_len - 1)
                     label2.config(text=f"{str(status[3] + 1).zfill(len(str(other_len)))}/{other_len}")
@@ -430,7 +457,7 @@ class app:
                 label1.config(text=f"Outlier")
                 img = Image.fromarray(self.filterable_instance.get_image(outliers[status[1]]))
                 img = img.resize((max(1, int(img.size[0] * size_mult)), max(1, int(img.size[1] * size_mult))))
-                self.currentimg = ImageTk.PhotoImage(image=img)
+                self.currentimg = [ImageTk.PhotoImage(image=img)]
                 image_box1.config(image=self.currentimg)
             else:
                 return
@@ -467,7 +494,7 @@ class app:
         newWindow = tk.Toplevel(self.master)
         newWindow.title("New Window")
         newWindow.attributes('-type', 'dialog')
-        label1 = ttk.Label(newWindow, text=f"Point at {self.filterer_instance.plot_points[idx]}")
+        label1 = ttk.Label(newWindow, text=f"Point at {[round(x, 5) for x in self.filterer_instance.plot_points[idx]]}")
         label2 = ttk.Label(newWindow, text=f"Point arg: {self.filterer_instance.data_args[idx]}")
         exit_btn = ttk.Button(newWindow, text="X", width=3, command=lambda: newWindow.destroy())
         resize_label = ttk.Label(newWindow, text="Resize")
@@ -475,14 +502,15 @@ class app:
 
 
         img = Image.fromarray(self.filterable_instance.get_image(self.filterer_instance.data_args[idx]))
-        self.currentimg = [ImageTk.PhotoImage(image=img)]
-        img_label = ttk.Label(newWindow, image=self.currentimg[0])
+        idx = len(self.currentimg)
+        self.currentimg.append(ImageTk.PhotoImage(image=img))
+        img_label = ttk.Label(newWindow, image=self.currentimg[idx])
 
         def resize():
             size_mult = 1.2 ** resize_slider.get()
             size = (max(1, int(img.size[0] * size_mult)), max(1, int(img.size[1] * size_mult)))
-            self.currentimg = [ImageTk.PhotoImage(image=img.resize(size))]
-            img_label.config(image=self.currentimg[0])
+            self.currentimg[idx] = ImageTk.PhotoImage(image=img.resize(size))
+            img_label.config(image=self.currentimg[idx])
 
         resize_slider.bind("<ButtonRelease-1>", lambda x: resize())
         resize_slider.set(0)
@@ -491,12 +519,10 @@ class app:
 
         label1.grid(row=0, column=0, rowspan=1, columnspan=1, sticky="W")
         label2.grid(row=1, column=0, rowspan=1, columnspan=1, sticky="W")
-        resize_label.grid(row=0, column=1, rowspan=1, columnspan=1, sticky="W")
-        resize_slider.grid(row=1, column=1, rowspan=1, columnspan=1, sticky="W")
+        resize_label.grid(row=0, column=1, rowspan=1, columnspan=1, sticky="W", padx=(10, 10))
+        resize_slider.grid(row=1, column=1, rowspan=1, columnspan=1, sticky="W", padx=(10, 10))
         exit_btn.grid(row=0, column=2, rowspan=2, columnspan=1, sticky="E")
         img_label.grid(row=2, column=0, rowspan=1, columnspan=3, sticky="N")
-
-
 
     def choose_layer(self):
         frame = self.get_frame()
@@ -524,9 +550,13 @@ class app:
 
         def chooseBtn():
             self.chosen_layer = tree.item(tree.focus())["tags"][0][1:]
+            if self.filterer_instance is not None:
+                self.filterer_instance.__del__()
             self.filterer_instance = DataFilterer(model=self.filterable_instance, layer=self.chosen_layer,
                                                   device="cuda")
             self.feature_map_shape = self.filterer_instance.get_feature_map_shape()
+            self.feature_map_dim = np.prod(self.feature_map_shape)
+            self.filter_downscale_dim = min(self.filter_downscale_dim, self.feature_map_dim)
             self.main_screen()
 
         choose_layer_btn = ttk.Button(frame, text="Choose", command=chooseBtn)
@@ -542,7 +572,6 @@ class app:
 
         tree.bind('<ButtonRelease-1>', selectItem)
 
-        # put items as a grid
         instruction_label.grid(row=0, column=0, sticky="NESW", columnspan=2)
         chosen_label.grid(row=1, column=0, sticky="E")
         choose_layer_btn.grid(row=1, column=1, sticky="E")
@@ -568,7 +597,15 @@ class app:
             try:
                 self.filterable_instance = a[1]()
                 self.chosen_class_name = a[0]
+                self.semantic_percent = 0.0
+                self.outlier_percent = 0.0
+                self.filter_downscale_dim = 100
                 self.chosen_layer = None
+                self.dataset_items = None
+                self.dataset_batches = None
+                self.feature_map_shape = (0,)
+                self.feature_map_dim = 0
+                self.clickable = False
             except Exception as err:
                 messagebox.showerror("Error", f"Error initializing found class:\n{err}")
             self.main_screen()
@@ -595,7 +632,7 @@ class app:
 
 def fit_imgs_to_grid(imgs):
     if not imgs:
-        return None
+        return Image.new("RGB", size=(0, 0))
     mode = imgs[0].mode
     size = imgs[0].size
     grid_size = math.ceil(math.sqrt(len(imgs)))

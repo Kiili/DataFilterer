@@ -1,4 +1,3 @@
-import math
 
 import numpy as np
 import torch
@@ -10,16 +9,13 @@ from filterable_interface import FilterableInterface
 
 class CIFAR10Dataset(torchvision.datasets.CIFAR10):
     def __init__(self):
-        super().__init__('./data/cifar-10',
+        super().__init__(root='./data/cifar-10',
                          train=True,
                          download=True,
                          transform=transforms.Compose([
                              transforms.ToTensor(),
                              transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                                   std=[0.229, 0.224, 0.225])]))
-
-    # def __len__(self):
-    #     return 10000
 
     def __getitem__(self, idx):
         img, label = super().__getitem__(index=idx)
@@ -60,7 +56,8 @@ if __name__ == '__main__':
 
     idxs = filterer_instance.get_idxs(semantic_percentage=0.09,
                                       outlier_percentage=0.01,
-                                      downscale_dim=None  # no dimensionality reduction to maximize accuracy
+                                      downscale_dim=None,  # no dimensionality reduction to maximize accuracy
+                                      downscale_method="PCA",
                                       )
     # :idxs: images that are in the filtered dataset
 

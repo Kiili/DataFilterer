@@ -13,7 +13,8 @@ class FilterableInterface:
 
     def get_filterable_dataset(self) -> Iterable:
         """
-        batch: 1 batch of input to model. Batch contents must be with constant shape
+        batch: 1 batch of input to model.
+        Batch contents must be with constant shape
 
         args: any metadata for each element in :batch:
 
